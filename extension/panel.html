@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>VideoNotes</title>
+<link rel="stylesheet" href="panel.css"></head><body><main>
+<h1>VideoNotes</h1><p>获取视频字幕，必要时转写音频。</p>
+<p id="video"></p>
+<label><input id="fallback" type="checkbox"> 获取不到字幕时，自动下载音频并转写</label>
+<p><button id="start">提取内容</button></p>
+<p id="status" role="status">准备就绪</p>
+<p>处理期间请保留此页面。结果保存到本机；当前版本提取原文，尚不生成笔记或翻译。</p>
+<pre id="log"></pre><h2>结果</h2><p id="files"></p><pre id="result"></pre>
+<details><summary>首次安装</summary><p>在项目目录执行命令时会自动注册本机通信程序，无需 setup.cmd：</p><pre id="install"></pre></details>
+</main><script src="panel.js"></script></body></html>

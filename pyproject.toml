@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-notes"
+version = "0.1.0"
+license = {file = "LICENSE"}
+description = "Fetch video subtitles in memory for detailed video notes"
+requires-python = ">=3.10"
+dependencies = ["yt-dlp>=2026.8.19"]
+
+[project.optional-dependencies]
+transcribe = ["faster-whisper>=1.2.1"]
+
+[project.scripts]
+video-notes = "video_notes.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["video_notes*"]

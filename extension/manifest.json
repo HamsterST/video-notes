@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "VideoNotes",
+  "version": "0.3.0",
+  "description": "将当前视频的字幕提取到本机，支持音频转写后备流程。",
+  "permissions": [
+    "activeTab",
+    "cookies",
+    "nativeMessaging",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://*.bilibili.com/*",
+    "https://*.youtube.com/*",
+    "https://youtu.be/*"
+  ],
+  "action": {
+    "default_title": "用 VideoNotes 提取内容"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArmp57mkfZLTCeXHUA+gZFEioQ7t7vH1a2GNhIkVtbRP0Xh9x9LoMiGc0vVeUDdhsebMWLJ+Zru6gehtb29sVzSgw520QWudygkRHDpevh2VN47VfODaReNx14Ps/+AlFUIypr5xQljSXqd+XBUBEMUmPie5tKaaK9QbqSAe2xwGe7sCekeXSrDLQv2qOwHn3Jir6xoeCR4U1ty5n5mnfbu8sdRqUdyGyJchhTEktBjzuRu930iNe3yR+kFGgM0mYzNpvJ9Iex08AQKnETDox7h5uZxCzqFlNckDffvI9UQc9+rFoE0cn058C+bMPw47EKt6RLSO/nyc74G86tcMNpQIDAQAB"
+}
