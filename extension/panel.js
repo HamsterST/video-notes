@@ -9,6 +9,11 @@ function videoURL(value) {
   if ((h === 'bilibili.com' || h.endsWith('.bilibili.com')) && /^\/video\/(BV[A-Za-z0-9]+|av\d+)/.test(u.pathname)) return {url:u.href, domain:'bilibili.com'};
   if ((h === 'youtube.com' || h.endsWith('.youtube.com')) && ((u.pathname === '/watch' && u.searchParams.get('v')) || /^\/(shorts|live)\/[\w-]+/.test(u.pathname))) return {url:u.href,domain:'youtube.com'};
   if (h === 'youtu.be' && /^\/[\w-]+$/.test(u.pathname)) return {url:`https://www.youtube.com/watch?v=${encodeURIComponent(u.pathname.slice(1))}`,domain:'youtube.com'};
+  if (h === 'douyin.com' || h === 'www.douyin.com') {
+    const match = /^\/video\/(\d+)\/?$/.exec(u.pathname);
+    const videoId = match?.[1] || u.searchParams.get('modal_id');
+    if (videoId && /^\d+$/.test(videoId)) return {url:`https://www.douyin.com/video/${videoId}`,domain:'douyin.com'};
+  }
   throw new Error('当前扩展暂不支持此链接，请使用已适配网站的单个视频详情页。');
 }
 chrome.tabs.get(source).then(t => { $('video').textContent = t.url; videoURL(t.url); }).catch(() => { $('status').textContent='请从已适配网站的视频详情页点击扩展。'; $('start').disabled=true; });

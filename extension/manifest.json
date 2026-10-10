@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VideoNotes",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "将当前视频的字幕提取到本机，支持音频转写后备流程。",
   "permissions": [
     "activeTab",
@@ -12,7 +12,8 @@
   "host_permissions": [
     "https://*.bilibili.com/*",
     "https://*.youtube.com/*",
-    "https://youtu.be/*"
+    "https://youtu.be/*",
+    "https://*.douyin.com/*"
   ],
   "action": {
     "default_title": "用 VideoNotes 提取内容"

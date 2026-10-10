@@ -17,6 +17,7 @@ from yt_dlp.cookies import YoutubeDLCookieJar
 from .workflow import run_workflow
 from .media import download_and_transcribe
 from .paths import DATA_DIR, DOWNLOAD_DIR, RESULTS_DIR
+from .douyin import DouyinShareError, resolve_douyin_share_url
 
 
 def read_exact(stream, size):
@@ -30,7 +31,7 @@ def read_exact(stream, size):
 
 
 def make_jar(message):
-    url = message.get('url', '')
+    url = resolve_douyin_share_url(message.get('url', ''))
     u = urlsplit(url)
     host = u.hostname or ''
     if u.scheme != 'https' or u.username or u.password or u.port not in (None, 443):
@@ -39,6 +40,8 @@ def make_jar(message):
         domain = 'bilibili.com'
     elif (host == 'youtube.com' or host.endswith('.youtube.com')) and ((u.path == '/watch' and parse_qs(u.query).get('v')) or re.match(r'^/(shorts|live)/[\w-]+', u.path)):
         domain = 'youtube.com'
+    elif host in {'douyin.com', 'www.douyin.com'} and re.fullmatch(r'/video/\d+/?', u.path):
+        domain = 'douyin.com'
     else:
         raise ValueError('当前扩展暂不支持此链接，请提供已适配网站的单个视频链接。')
     rows = message.get('cookies')
@@ -97,7 +100,8 @@ def main():
                                   transcriber=transcriber, transcript_loader=partial(transcriber, cache_only=True))
         jar.clear()
         lines = [result['message'], *result.get('warnings', [])]
-        lines += [f"[{s['start']:.1f}s–{s['end']:.1f}s] {s['text']}" for s in result.get('segments', [])]
+        lines += [f"[{s['start']:.1f}s–{s['end']:.1f}s] " + (f"[{s['speaker']}] " if s.get('speaker') else '') + s['text']
+                  for s in result.get('segments', [])]
         transcript = '\n'.join(lines)
         files = []
         if result.get('status') == 'ok':
@@ -112,6 +116,12 @@ def main():
               'preview': transcript[:40000] + ('\n页面仅预览前 40000 字符，完整原文已保存。' if len(transcript)>40000 else '')})
     except (EOFError, BrokenPipeError):
         return 1
+    except DouyinShareError as exc:
+        try:
+            send({'type': 'error', 'message': str(exc)})
+        except BrokenPipeError:
+            pass
+        return 2
     except Exception:
         try:
             send({'type':'error','message':'处理失败，请检查本机依赖、视频链接和输出目录权限。登录凭据不会写入错误日志。'})

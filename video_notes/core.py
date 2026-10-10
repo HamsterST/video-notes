@@ -12,6 +12,7 @@ from .parsers import parse_subtitles
 from .diagnostics import check_login, cookie_failure_reason
 from . import cache
 from .urls import canonical_media_url
+from .douyin import DouyinLookupError, fetch_video_info, video_id_for
 
 FORMATS = ("json3", "json", "vtt", "srt", "srv1", "srv2", "srv3", "ttml")
 MAX_SUBTITLE_BYTES = 20 * 1024 * 1024
@@ -62,7 +63,8 @@ def candidates(info, preferred=None):
 
 
 def _get_video_subtitles(url, *, subtitle_language=None, output_language="zh", gap_seconds=120, gap_ratio=0.1,
-                        cookies_from_browser=None, browser_profile=None, diagnostics=True, cookie_file=None, cookie_jar=None):
+                        cookies_from_browser=None, browser_profile=None, diagnostics=True, cookie_file=None, cookie_jar=None,
+                        on_media_info=None):
     if urlsplit(url).scheme not in {"http", "https"} or not urlsplit(url).hostname:
         raise ValueError("请提供 HTTP(S) 视频链接。")
     if not math.isfinite(gap_seconds) or gap_seconds < 0 or not 0 <= gap_ratio <= 1:
@@ -79,7 +81,7 @@ def _get_video_subtitles(url, *, subtitle_language=None, output_language="zh", g
     if diagnostics:
         result['diagnostics'] = {'cookie_status': 'pending' if (cookie_jar is not None or cookie_file or cookies_from_browser) else 'disabled',
                                  'login': {'status': 'not_checked', 'message': '未检查平台登录状态。'}}
-    options = dict(skip_download=True, noplaylist=True, writesubtitles=True,
+    options = dict(skip_download=True, noplaylist=True, writesubtitles=True, format='bestaudio/best',
                    writeautomaticsub=True, cachedir=False, quiet=True, logger=QuietLogger(),
                    socket_timeout=20, retries=1, extractor_retries=1, ignore_no_formats_error=True)
     with yt_dlp.YoutubeDL(options) as ydl:
@@ -109,25 +111,30 @@ def _get_video_subtitles(url, *, subtitle_language=None, output_language="zh", g
                 result['diagnostics']['login'] = login
                 result['authentication']['login_verified'] = {'logged_in': True, 'not_logged_in': False}.get(login['status'])
         try:
-            info = ydl.extract_info(url, download=False)
-        except yt_dlp.utils.DownloadError:
+            info = fetch_video_info(url) if video_id_for(url) else ydl.extract_info(url, download=False)
+        except (yt_dlp.utils.DownloadError, DouyinLookupError):
             result["message"] = "查询失败：可能是网络、访问限制或站点解析问题；不能据此判断没有字幕。"
             return result
         if not info or info.get("_type") in {"playlist", "multi_video"}:
             result["status"] = "unsupported_input"
             result["message"] = "请提供单个视频或具体分集链接，不接受播放列表。"
             return result
+        if on_media_info is not None:
+            on_media_info(info)
         result["video"] = {k: info.get(k) for k in ("id", "title", "duration", "language", "extractor")}
         all_tracks = candidates(info)
         result["available_subtitles"] = [{"language": t["language"], "source": t["source"],
                                             "formats": [f["ext"] for f in t["formats"]]} for t in all_tracks]
         if not all_tracks:
-            message = ("已携带 Cookie 查询，仍未获取到可用字幕。Cookie 不一定代表登录仍有效；若网页可正常使用，可尝试音频转写。"
-                       if (cookie_jar is not None or cookie_file or cookies_from_browser) else "暂未获取到可用字幕。可尝试使用浏览器登录状态重试；若已登录，请添加 --cookies-from-browser chrome。")
-            if result['authentication']['login_verified'] is True:
-                message = '登录状态有效，但暂未获取到可用字幕。可直接使用音频转写。'
-            elif result['authentication']['login_verified'] is False:
-                message = ('文件中的登录状态无效，请登录后重新导出 Cookie，或直接使用音频转写。' if cookie_file else '当前请求未登录，且暂未获取到字幕。可在所选浏览器登录后重试，或直接使用音频转写。')
+            if video_id_for(url):
+                message = '该视频返回的数据未提供可用的独立字幕轨；可下载原声视频并使用现有模型转写。'
+            else:
+                message = ("已携带 Cookie 查询，仍未获取到可用字幕。Cookie 不一定代表登录仍有效；若网页可正常使用，可尝试音频转写。"
+                           if (cookie_jar is not None or cookie_file or cookies_from_browser) else "暂未获取到可用字幕。可尝试使用浏览器登录状态重试；若已登录，请添加 --cookies-from-browser chrome。")
+                if result['authentication']['login_verified'] is True:
+                    message = '登录状态有效，但暂未获取到可用字幕。可直接使用音频转写。'
+                elif result['authentication']['login_verified'] is False:
+                    message = ('文件中的登录状态无效，请登录后重新导出 Cookie，或直接使用音频转写。' if cookie_file else '当前请求未登录，且暂未获取到字幕。可在所选浏览器登录后重试，或直接使用音频转写。')
             result.update(status="no_subtitles", message=message)
             return result
         tracks = candidates(info, subtitle_language)

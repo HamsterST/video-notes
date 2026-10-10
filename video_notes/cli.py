@@ -7,6 +7,7 @@ from .workflow import run_workflow
 from .media import download_and_transcribe
 from .paths import DOWNLOAD_DIR
 from .settings import set_model
+from .douyin import resolve_douyin_share_url
 
 
 def choose_action():
@@ -27,7 +28,7 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="VideoNotes：后台扩展获取登录信息，自动获取字幕或转写音频。")
     parser.add_argument("url", nargs="?")
-    parser.add_argument("--set-model", metavar="MODEL", help="保存默认 Whisper 模型，推荐 small、large-v3-turbo、large-v3；可不带视频链接")
+    parser.add_argument("--set-model", metavar="MODEL", help="保存默认转写模型：small、large-v3-turbo、large-v3 或 moss-0.9b；可不带视频链接")
     parser.add_argument("--refresh", action="store_true", help="重新查询字幕或识别，仍复用已有完整媒体")
     parser.add_argument("--subtitle-language", help="指定源字幕轨道，例如 en、zh-Hans；不等于翻译语言")
     parser.add_argument("--subtitle-file", help="直接使用已有 SRT/VTT/字幕 JSON 或成功的结果 JSON，不下载或识别")
@@ -44,10 +45,10 @@ def main():
     parser.add_argument('--diagnostics', action=argparse.BooleanOptionalAction, default=True,
                         help='默认开启登录诊断，使用 --no-diagnostics 关闭')
     parser.add_argument('--download-dir', default=str(DOWNLOAD_DIR), help='音视频缓存目录，默认数据目录下 downloads')
-    parser.add_argument('--model', help='模型名称或本地模型目录；仅本次使用，默认读取已保存选择；推荐 small、large-v3-turbo、large-v3')
-    parser.add_argument('--model-dir', help='模型下载目录，默认数据目录下 models/faster-whisper')
-    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cpu')
-    parser.add_argument('--beam-size', type=int, default=1, help='默认 1 偏重速度，5 为原有解码设置')
+    parser.add_argument('--model', help='模型名称（含 moss-0.9b）或本地 Whisper 模型目录；仅本次使用，默认读取已保存选择')
+    parser.add_argument('--model-dir', help='模型下载目录；Whisper 默认 models/faster-whisper，MOSS 默认 models/moss')
+    parser.add_argument('--device', choices=('cpu', 'cuda'), default='cuda', help='转写设备，默认 cuda；无 NVIDIA GPU 时显式选择 cpu')
+    parser.add_argument('--beam-size', type=int, default=1, help='Whisper 解码参数，默认 1；MOSS 不使用')
     parser.add_argument('--cpu-threads', type=int, help='CPU 推理线程，默认最多 8；更多不一定更快')
     parser.add_argument('--local-video', help='转写时复用指定本地视频；仍先尝试获取链接字幕')
     parser.add_argument('--set-data-dir', help='复制现有数据到指定绝对目录并保存；旧文件保留')
@@ -72,6 +73,7 @@ def main():
             print(f'默认本地转写模型已设为 {selected}；需要转写时才下载。', file=sys.stderr)
         if not args.url:
             return 0
+        args.url = resolve_douyin_share_url(args.url)
         cookie_jar = None
         cookie_loader = None
         if not (args.no_cookies or args.cookie_file or args.cookies_from_browser):
@@ -82,7 +84,7 @@ def main():
                 args.url = 'https://www.youtube.com/watch?' + urlencode({'v': parts.path.strip('/')})
                 parts = urlsplit(args.url)
             host = parts.hostname or ''
-            if host in {'bilibili.com', 'youtube.com'} or host.endswith(('.bilibili.com', '.youtube.com')):
+            if host in {'bilibili.com', 'youtube.com', 'douyin.com'} or host.endswith(('.bilibili.com', '.youtube.com', '.douyin.com')):
                 if args.browser_profile:
                     raise ValueError('--browser-profile 仅用于 --cookies-from-browser；扩展使用安装它的 Chrome 配置。')
                 cookie_loader = extension_cookies
@@ -112,5 +114,6 @@ def main():
         for warning in result["warnings"]:
             print("提示：" + warning)
         for cue in result["segments"]:
-            print(f'[{cue["start"]:.1f}s–{cue["end"]:.1f}s] {cue["text"]}')
+            speaker = f'[{cue["speaker"]}] ' if cue.get('speaker') else ''
+            print(f'[{cue["start"]:.1f}s–{cue["end"]:.1f}s] {speaker}{cue["text"]}')
     return 0 if result["status"] == "ok" else 2

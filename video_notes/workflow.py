@@ -35,6 +35,11 @@ def run_workflow(url, *, choose=None, fallback='ask', cookies_from_browser='chro
     if cookie_file or cookie_jar is not None:
         cookies_from_browser = None
     query = dict(cookie_jar=cookie_jar, cookie_file=cookie_file, cookies_from_browser=cookies_from_browser, browser_profile=browser_profile, **subtitle_options)
+    media_info = None
+    def remember_media_info(info):
+        nonlocal media_info
+        media_info = info
+    query['on_media_info'] = remember_media_info
     if force:
         query['force'] = True
     progress('正在使用扩展提供的登录信息查询字幕。' if cookie_jar is not None else '正在使用 Cookie 文件查询字幕。' if cookie_file else '正在使用浏览器登录信息查询字幕。' if cookies_from_browser else '正在匿名查询字幕。')
@@ -71,7 +76,8 @@ def run_workflow(url, *, choose=None, fallback='ask', cookies_from_browser='chro
     if cookie_jar is not None and result['status'] not in {'cookie_load_failed', 'site_cookies_missing'}:
         file_options['cookie_jar'] = cookie_jar
     converted = transcriber(url, **file_options, cookies_from_browser=browser, browser_profile=browser_profile if browser else None,
-                            output_language=subtitle_options.get('output_language', 'zh'), progress=progress)
+                            output_language=subtitle_options.get('output_language', 'zh'), progress=progress,
+                            media_info=media_info)
     if 'diagnostics' in result:
         converted['subtitle_query_diagnostics'] = result['diagnostics']
     return converted

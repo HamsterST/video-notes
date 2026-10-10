@@ -69,3 +69,15 @@ class WorkflowTests(unittest.TestCase):
         convert = Mock()
         run_workflow('https://example.org/v', fallback='transcribe', transcriber=convert)
         convert.assert_not_called()
+
+    @patch('video_notes.workflow.get_video_subtitles')
+    def test_media_info_is_reused_only_in_memory(self, query):
+        info = {'id': 'clip', 'url': 'https://cdn.example/temporary-token'}
+        def subtitle_query(url, **options):
+            options['on_media_info'](info)
+            return failed()
+        query.side_effect = subtitle_query
+        convert = Mock(return_value={'status': 'ok', 'segments': [], 'message': 'ok'})
+        result = run_workflow('https://example.org/v', fallback='transcribe', transcriber=convert)
+        self.assertIs(convert.call_args.kwargs['media_info'], info)
+        self.assertNotIn('temporary-token', str(result))

@@ -6,7 +6,7 @@ import time
 import sys
 from .urls import canonical_media_url
 from . import cache
-from .settings import resolve_model, saved_model, configure_model
+from .settings import resolve_model, saved_model, configure_model, RECOMMENDED_MODELS, MOSS_MODEL
 from importlib.metadata import version, PackageNotFoundError
 
 import yt_dlp
@@ -14,6 +14,7 @@ from yt_dlp.cookies import load_cookies
 
 from .core import QuietLogger, check_coverage
 from .paths import DATA_DIR, DOWNLOAD_DIR, MODELS_DIR
+from .douyin import video_id_for, fetch_video_info, download_video
 
 
 
@@ -51,6 +52,16 @@ def download_and_transcribe(url, **kwargs):
 
 def recognition_recipe(model, device, beam_size, cpu_threads):
     name, selected = resolve_model(model)
+    if name == MOSS_MODEL:
+        from .moss_backend import MOSS_REVISION
+        try:
+            engine = version('moss-transcribe-diarize')
+        except PackageNotFoundError:
+            engine = 'unavailable'
+        return {'model': {'name': name, 'repository': selected, 'revision': MOSS_REVISION},
+                'engine': 'moss-transcribe-diarize', 'engine_version': engine, 'device': device,
+                'compute_type': 'float32' if device == 'cpu' else 'auto-fp16-bf16',
+                'cpu_threads': cpu_threads, 'speaker_diarization': True}
     signature = {'name': name, 'path': selected}
     path = Path(selected)
     if path.is_dir():
@@ -77,8 +88,8 @@ def reuse_result(result, output_language, gap_seconds, gap_ratio):
 def _download_and_transcribe(url, *, cookies_from_browser=None, browser_profile=None, cookie_file=None, cookie_jar=None,
                            output_language='zh', progress=lambda message: None,
                            download_dir=DOWNLOAD_DIR, model=None, model_dir=None,
-                           device='cpu', local_video=None, gap_seconds=120, gap_ratio=0.1,
-                           beam_size=1, cpu_threads=None, force=False, cache_only=False):
+                           device='cuda', local_video=None, gap_seconds=120, gap_ratio=0.1,
+                           beam_size=1, cpu_threads=None, force=False, cache_only=False, media_info=None):
     if beam_size < 1 or (cpu_threads is not None and cpu_threads < 1):
         raise ValueError('beam-size 和 cpu-threads 必须为正整数。')
     result = dict(status='download_failed', segments=[], warnings=[], notes_generated=False,
@@ -108,15 +119,22 @@ def _download_and_transcribe(url, *, cookies_from_browser=None, browser_profile=
         selected_choice = configure_model(interactive=sys.stdin.isatty())
         if not selected_choice:
             result.update(status='model_selection_required', next_action='select_model',
-                          models=['small', 'large-v3-turbo', 'large-v3'],
+                          models=list(RECOMMENDED_MODELS),
                           data_dir=str(DATA_DIR),
                           storage_notice=f'模型和缓存将保存到 {DATA_DIR}；如需换盘，可在选择模型时同时指定目录。',
                           message=f'模型和缓存将保存到 {DATA_DIR}；如需换盘，可在选择模型时同时指定目录。首次转写需要选择本地模型。请让 Agent 选择模型后运行 scripts/bootstrap.py --transcribe --model <模型>，再重试；尚未下载媒体。')
             return result
     model = selected_choice
+    if model == MOSS_MODEL and beam_size != 1:
+        raise ValueError('MOSS 不使用 --beam-size；请使用默认值 1。')
     if not cache_only:
         try:
-            import faster_whisper
+            if model == MOSS_MODEL:
+                import torch
+                import transformers
+                import moss_transcribe_diarize
+            else:
+                import faster_whisper
         except ImportError:
             result.update(status='dependency_missing', next_action='install_transcription',
                           message='首次转写尚未安装语音依赖。请让 Agent 运行 scripts/bootstrap.py --transcribe --model ' + model + '，然后重试；尚未下载媒体。')
@@ -151,40 +169,54 @@ def _download_and_transcribe(url, *, cookies_from_browser=None, browser_profile=
                 return None
             directory.mkdir(parents=True, exist_ok=True)
             (directory / '.videonotes-media').touch()
-            options = dict(noplaylist=True, cachedir=False, quiet=True, logger=QuietLogger(),
+            if video_id_for(url):
+                try:
+                    info = media_info if isinstance(media_info, dict) and media_info.get('id') == video_id_for(url) and media_info.get('_douyin_media_urls') else fetch_video_info(url)
+                    progress('正在下载抖音原声视频；没有独立原声音轨。')
+                    video = download_video(info, directory, progress)
+                    manifest.write_text(json.dumps({'file': video.name, 'size': video.stat().st_size}), encoding='utf-8')
+                except Exception:
+                    result['message'] = '抖音媒体下载失败，请检查网络与视频访问状态；未执行转写。'
+                    return result
+            else:
+                options = dict(noplaylist=True, cachedir=False, quiet=True, logger=QuietLogger(),
                            socket_timeout=20, retries=2, outtmpl=str(directory / '%(id)s.%(ext)s'),
                            format='bestaudio/best', windowsfilenames=True,
                            progress_hooks=[download_progress(progress)])
-            final_paths = []
-            options['postprocessor_hooks'] = [lambda event: final_paths.append(event['info_dict'].get('filepath')) if event.get('status') == 'finished' else None]
-            try:
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    if cookie_jar is not None or cookie_file or cookies_from_browser:
-                        try:
-                            ydl.cookiejar = cookie_jar if cookie_jar is not None else load_cookies(cookie_file, None if cookie_file else (cookies_from_browser, browser_profile), ydl)
-                        except Exception:
-                            result['warnings'].append('下载时无法读取 Cookie，尝试匿名下载。')
-                    progress('正在解析媒体地址；网络请求可能需要等待。')
-                    info = ydl.extract_info(url, download=False)
-                    if not info or info.get('_type') in {'playlist', 'multi_video'}:
-                        result.update(status='unsupported_input', message='请提供单个视频链接。')
-                        return result
-                    if info.get('vcodec') == 'none':
-                        progress('正在下载独立音轨，不下载视频画面。')
-                    else:
-                        progress('未选到独立音轨，将下载包含音频的媒体文件。')
-                    ydl.process_info(info)
-                    paths = list(reversed([p for p in final_paths if p])) + [info.get('filepath'), ydl.prepare_filename(info)]
-                    video = next((Path(p).resolve() for p in paths if p and Path(p).is_file() and Path(p).suffix not in {'.part', '.ytdl'}), None)
-                    if video is None:
-                        raise ValueError('No completed media file')
-                    if video.parent != directory:
-                        raise ValueError('Unexpected media path')
-                    manifest.write_text(json.dumps({'file': video.name, 'size': video.stat().st_size}), encoding='utf-8')
-            except Exception:
-                result['message'] = '音频或媒体下载失败，请检查网络与访问权限；未执行转写。'
-                return result
-    model_cache = Path(model_dir).expanduser().resolve() if model_dir else MODELS_DIR / 'faster-whisper'
+                final_paths = []
+                options['postprocessor_hooks'] = [lambda event: final_paths.append(event['info_dict'].get('filepath')) if event.get('status') == 'finished' else None]
+                try:
+                    with yt_dlp.YoutubeDL(options) as ydl:
+                        if cookie_jar is not None or cookie_file or cookies_from_browser:
+                            try:
+                                ydl.cookiejar = cookie_jar if cookie_jar is not None else load_cookies(cookie_file, None if cookie_file else (cookies_from_browser, browser_profile), ydl)
+                            except Exception:
+                                result['warnings'].append('下载时无法读取 Cookie，尝试匿名下载。')
+                        if media_info is None:
+                            progress('正在解析媒体地址；网络请求可能需要等待。')
+                            info = ydl.extract_info(url, download=False)
+                        else:
+                            progress('复用字幕查询时取得的媒体地址。')
+                            info = media_info
+                        if not info or info.get('_type') in {'playlist', 'multi_video'}:
+                            result.update(status='unsupported_input', message='请提供单个视频链接。')
+                            return result
+                        if info.get('vcodec') == 'none':
+                            progress('正在下载独立音轨，不下载视频画面。')
+                        else:
+                            progress('未选到独立音轨，将下载包含音频的媒体文件。')
+                        ydl.process_info(info)
+                        paths = list(reversed([p for p in final_paths if p])) + [info.get('filepath'), ydl.prepare_filename(info)]
+                        video = next((Path(p).resolve() for p in paths if p and Path(p).is_file() and Path(p).suffix not in {'.part', '.ytdl'}), None)
+                        if video is None:
+                            raise ValueError('No completed media file')
+                        if video.parent != directory:
+                            raise ValueError('Unexpected media path')
+                        manifest.write_text(json.dumps({'file': video.name, 'size': video.stat().st_size}), encoding='utf-8')
+                except Exception:
+                    result['message'] = '音频或媒体下载失败，请检查网络与访问权限；未执行转写。'
+                    return result
+    model_cache = Path(model_dir).expanduser().resolve() if model_dir else MODELS_DIR / ('moss' if model == MOSS_MODEL else 'faster-whisper')
     recipe = recognition_recipe(model, device, beam_size, cpu_threads)
     model_name, selected_model = resolve_model(model)
     engine_version = recipe['engine_version']
@@ -204,8 +236,47 @@ def _download_and_transcribe(url, *, cookies_from_browser=None, browser_profile=
         return reuse_result(cached, output_language, gap_seconds, gap_ratio)
     if cache_only:
         return None
+    if model == MOSS_MODEL:
+        try:
+            from .moss_backend import MossInputError, transcribe as transcribe_moss
+            moss = transcribe_moss(video, model_cache=model_cache, device=device,
+                                  cpu_threads=cpu_threads, progress=progress)
+            rows = moss['segments']
+            if not rows:
+                result.update(status='no_speech', message='MOSS 转写完成，但未识别到讲话内容。')
+                return result
+            coverage = check_coverage(moss['duration'], rows, gap_seconds, gap_ratio)
+            speakers = sorted({row['speaker'] for row in rows})
+            result.update(status='ok', segments=rows, coverage=coverage, media_path=str(video),
+                          performance=moss['performance'],
+                          selected_subtitle={'language': 'und', 'source': 'speech_recognition'},
+                          speakers=speakers,
+                          message='MOSS 转写及说话人区分完成；当前是原语言文字，尚未翻译或生成笔记。')
+            result['provenance'] = {'url': canonical_media_url(url), 'source': 'speech_recognition',
+                                    'engine': 'moss-transcribe-diarize', 'engine_version': engine_version,
+                                    'model': model_name, 'model_revision': recipe['model']['revision'],
+                                    'device': device, 'compute_type': moss['compute_type'],
+                                    'speaker_diarization': True, 'speaker_labels': 'anonymous',
+                                    'max_new_tokens': moss['performance']['max_new_tokens'],
+                                    'language': 'und', 'completed_at': cache.utc_now()}
+            result['cache'] = {'reused': False, 'kind': 'transcripts'}
+            result['warnings'] += coverage['warnings'] + [
+                '自动语音识别可能存在人名、术语和内容误差；S01 等标签仅区分声音，不代表真实身份。'
+            ]
+        except MossInputError as exc:
+            result.update(status='transcription_failed', media_path=str(video), message=str(exc))
+        except Exception:
+            result.update(status='transcription_failed', media_path=str(video),
+                          message='MOSS 模型加载或转写失败，媒体文件已保留。请检查依赖、模型下载、内存和设备；可改用 Whisper 模型重试。')
+        if result['status'] == 'ok':
+            cache.write('transcripts', identity, result)
+            index_result(result)
+        return result
     progress('正在加载语音转写依赖，请稍候。')
     try:
+        if device == 'cuda':
+            from .gpu import prepare_cuda_libraries
+            prepare_cuda_libraries()
         from faster_whisper import WhisperModel
     except ImportError:
         result.update(status='dependency_missing', message='请先安装转写依赖：python -m pip install "faster-whisper>=1.2.1"')
@@ -253,7 +324,7 @@ def _download_and_transcribe(url, *, cookies_from_browser=None, browser_profile=
         result['warnings'] += coverage['warnings'] + ['自动语音识别可能存在人名、术语和内容误差。']
     except Exception:
         result.update(status='transcription_failed', media_path=str(video),
-                      message='模型加载或转写失败，音视频文件已保留。请检查模型路径、下载网络、目录写入权限或设备依赖；可指定 --model 本地模型目录重试。')
+                      message='模型加载或转写失败，音视频文件已保留。请检查模型路径、网络和设备依赖；默认 CUDA 需要 NVIDIA GPU、CUDA 12 cuBLAS 与 cuDNN 9，可显式使用 --device cpu 重试。')
     if result['status'] == 'ok':
         cache.write('transcripts', identity, result)
         index_result(result)

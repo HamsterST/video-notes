@@ -10,7 +10,8 @@ function connectBridge() {
       const url=new URL(message.url);
       const h=url.hostname;
       const domain=(h==='bilibili.com'||h.endsWith('.bilibili.com'))?'bilibili.com':
-        (h==='youtube.com'||h.endsWith('.youtube.com'))?'youtube.com':null;
+        (h==='youtube.com'||h.endsWith('.youtube.com'))?'youtube.com':
+        (h==='douyin.com'||h.endsWith('.douyin.com'))?'douyin.com':null;
       if(url.protocol!=='https:' || !domain) throw new Error('Unsupported site');
       // Use this extension profile's regular cookie store, independent of active tab.
       const cookies=(await chrome.cookies.getAll({domain})).filter(c=>!c.partitionKey);

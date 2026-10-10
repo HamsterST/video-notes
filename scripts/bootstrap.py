@@ -8,7 +8,8 @@ import sys
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
-MODELS = ('small', 'large-v3-turbo', 'large-v3')
+MOSS_MODEL = 'moss-0.9b'
+MODELS = ('small', 'large-v3-turbo', 'large-v3', MOSS_MODEL)
 
 
 def atomic_json(path, value):
@@ -34,7 +35,9 @@ except ImportError:
 import yt_dlp
 assert Version(version('yt-dlp')) >= Version('2026.8.19')
 """
-    if transcribe:
+    if transcribe == 'moss':
+        probe += "\nimport torch, transformers, moss_transcribe_diarize\nassert Version(version('moss-transcribe-diarize')) >= Version('0.1.0')\nassert Version(version('transformers')) >= Version('5.6.0')\n"
+    elif transcribe:
         probe += "\nimport faster_whisper\nassert Version(version('faster-whisper')) >= Version('1.2.1')\n"
     try:
         for arguments in ([str(python), '-c', probe], [str(python), '-m', 'pip', 'check']):
@@ -96,8 +99,9 @@ def _install_runtime(root, data, runtime_python, model, transcribe, temporary):
                        PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
     def run(arguments):
         subprocess.run([str(x) for x in arguments], cwd=root, env=environment, check=True)
+    required = 'moss' if transcribe and model == MOSS_MODEL else transcribe
     selected = next((python for python in runtime_candidates(root, runtime_python)
-                     if dependencies_available(python, root, environment, transcribe)), None)
+                     if dependencies_available(python, root, environment, required)), None)
     reused = selected is not None
     if reused:
         runtime_python = selected
@@ -107,13 +111,15 @@ def _install_runtime(root, data, runtime_python, model, transcribe, temporary):
             print('现有环境依赖不满足，创建项目内独立 Python 环境……', flush=True)
             run([sys.executable, '-m', 'venv', str(root / '.venv')])
         print('仅在项目独立环境中安装所需依赖……', flush=True)
-        run([runtime_python, '-m', 'pip', 'install', '--disable-pip-version-check', '-e', '.[transcribe]' if transcribe else '.'])
+        extra = '.[moss]' if required == 'moss' else '.[transcribe]' if transcribe else '.'
+        run([runtime_python, '-m', 'pip', 'install', '--disable-pip-version-check', '-e', extra])
         run([runtime_python, '-m', 'pip', 'check'])
     if model:
         run([runtime_python, '-m', 'video_notes', '--set-model', model])
     print('注册本机通信……', flush=True)
     run([runtime_python, root / 'scripts/install_native_host.py'])
-    run([runtime_python, '-c', 'import video_notes, yt_dlp' + ('; import faster_whisper' if transcribe else '')])
+    imports = '; import torch, transformers, moss_transcribe_diarize' if required == 'moss' else '; import faster_whisper' if transcribe else ''
+    run([runtime_python, '-c', 'import video_notes, yt_dlp' + imports])
     runtime = {'project_dir': str(root), 'python': str(runtime_python),
                'rules_file': str(root / 'rules/notes-generation.md'),
                'data_dir': str(data), 'media_dir': str(data / 'downloads')}
